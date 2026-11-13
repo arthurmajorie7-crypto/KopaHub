@@ -1,5 +1,5 @@
-import { useAuth } from './context/AuthContext';
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -21,10 +21,10 @@ function ProtectedRoute() {
 
 function AdminRoute() {
   const { user } = useAuth();
-  return user?.role === 'admin' ? <AdminPage /> : <Navigate to="/dashboard" replace />;
+  return user?.role?.toLowerCase() === 'admin' ? <AdminPage /> : <Navigate to="/dashboard" replace />;
 }
 
-export default function App() {
+function AppRoutes() {
   return (
     <BrowserRouter>
       <Routes>
@@ -44,8 +44,12 @@ export default function App() {
             <Route path="/admin" element={<AdminRoute />} />
           </Route>
         </Route>
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>
   );
+}
+
+export default function App() {
+  return <AuthProvider><AppRoutes /></AuthProvider>;
 }
