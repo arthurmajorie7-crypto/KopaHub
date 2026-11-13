@@ -9,11 +9,11 @@ import { users, groups, loans, payments, notifications } from './mockData.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'kopahub-dev-secret';
+const PORT = Number(process.env.PORT) || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || 'local-development-only-change-this-secret';
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({ origin: process.env.CLIENT_ORIGIN || true }));
+app.use(express.json({ limit: '100kb' }));
 app.use(morgan('dev'));
 
 const userStore = structuredClone(users);
@@ -21,153 +21,105 @@ const groupStore = structuredClone(groups);
 const loanStore = structuredClone(loans);
 const paymentStore = structuredClone(payments);
 const notificationStore = structuredClone(notifications);
+const resetTokens = new Map();
 
 function sanitizeUser(user) {
-  return {
-    id: user.id,
-    fullName: user.fullName,
-    phoneNumber: user.phoneNumber,
-    email: user.email,
-    role: user.role,
-    location: user.location,
-    profileImage: user.profileImage,
-  };
+  const { passwordHash, ...safeUser } = user;
+  return safeUser;
 }
 
 function signToken(user) {
-  return jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, {
-    expiresIn: '7d',
-  });
+  return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
 }
 
 function authenticate(req, res, next) {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Authentication required.' });
-  }
-
+  const authorization = req.headers.authorization || '';
+  if (!authorization.startsWith('Bearer ')) return res.status(401).json({ message: 'Authentication required.' });
   try {
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const user = userStore.find((entry) => entry.id === decoded.id);
-
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid session.' });
-    }
-
+    const payload = jwt.verify(authorization.slice(7), JWT_SECRET);
+    const user = userStore.find((entry) => entry.id === payload.id);
+    if (!user) return res.status(401).json({ message: 'Invalid session.' });
     req.user = sanitizeUser(user);
     next();
-  } catch (error) {
+  } catch {
     return res.status(401).json({ message: 'Invalid or expired token.' });
   }
 }
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', app: 'KopaHub API' });
-});
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') return res.status(403).json({ message: 'Administrator access required.' });
+  next();
+}
+
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', app: 'KopaHub API', mode: 'demo' }));
 
 app.post('/api/auth/register', async (req, res) => {
-  const { fullName, phoneNumber, email, password, confirmPassword } = req.body;
-
-  if (!fullName || !phoneNumber || !password || !confirmPassword) {
-    return res.status(400).json({ message: 'Please fill in all required fields.' });
+  const fullName = String(req.body.fullName || '').trim();
+  const phoneNumber = String(req.body.phoneNumber || '').trim();
+  const email = String(req.body.email || '').trim().toLowerCase() || null;
+  const { password, confirmPassword } = req.body;
+  if (fullName.length < 2 || phoneNumber.length < 6 || typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ message: 'Enter a valid name, phone number, and password of at least 8 characters.' });
   }
-
-  if (password !== confirmPassword) {
-    return res.status(400).json({ message: 'Passwords do not match.' });
-  }
-
-  const existingUser = userStore.find((user) => user.email === email || user.phoneNumber === phoneNumber);
-  if (existingUser) {
+  if (password !== confirmPassword) return res.status(400).json({ message: 'Passwords do not match.' });
+  if (userStore.some((user) => user.phoneNumber === phoneNumber || (email && user.email.toLowerCase() === email))) {
     return res.status(409).json({ message: 'A user with this email or phone number already exists.' });
   }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  const newUser = {
-    id: `user-${Date.now()}`,
+  const user = {
+    id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     fullName,
     phoneNumber,
-    email: email || `member-${Date.now()}@kopahub.io`,
-    passwordHash,
+    email: email || `${phoneNumber.replace(/\D/g, '')}@phone.kopahub.local`,
+    passwordHash: await bcrypt.hash(password, 12),
     role: 'member',
-    location: 'Nairobi, Kenya',
-    profileImage: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330',
+    location: '',
+    profileImage: null,
   };
-
-  userStore.push(newUser);
-  const token = signToken(newUser);
-
-  return res.status(201).json({
-    token,
-    user: sanitizeUser(newUser),
-    message: 'Account created successfully.',
-  });
+  userStore.push(user);
+  return res.status(201).json({ token: signToken(user), user: sanitizeUser(user), message: 'Account created successfully.' });
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-
-  const user = userStore.find((entry) => entry.email.toLowerCase() === String(email || '').toLowerCase());
-  if (!user) {
-    return res.status(401).json({ message: 'Invalid email or password.' });
+  const identifier = String(req.body.email || req.body.phoneNumber || '').trim().toLowerCase();
+  const password = req.body.password;
+  const user = userStore.find((entry) => entry.email.toLowerCase() === identifier || entry.phoneNumber.toLowerCase() === identifier);
+  if (!user || typeof password !== 'string' || !(await bcrypt.compare(password, user.passwordHash))) {
+    return res.status(401).json({ message: 'Invalid email/phone or password.' });
   }
-
-  const passwordValid = await bcrypt.compare(password, user.passwordHash);
-  if (!passwordValid) {
-    return res.status(401).json({ message: 'Invalid email or password.' });
-  }
-
-  const token = signToken(user);
-
-  return res.json({
-    token,
-    user: sanitizeUser(user),
-    message: 'Login successful.',
-  });
+  return res.json({ token: signToken(user), user: sanitizeUser(user), message: 'Login successful.' });
 });
 
-app.get('/api/auth/me', authenticate, (req, res) => {
-  res.json({ user: req.user });
-});
+app.get('/api/auth/me', authenticate, (req, res) => res.json({ user: req.user }));
+app.post('/api/auth/logout', authenticate, (_req, res) => res.json({ message: 'Logged out successfully.' }));
 
 app.post('/api/auth/forgot-password', (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ message: 'Email is required.' });
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ message: 'Email is required.' });
+  const user = userStore.find((entry) => entry.email.toLowerCase() === email);
+  let response = { message: 'If an account exists for this email, reset instructions will be sent.' };
+  if (user && process.env.NODE_ENV !== 'production') {
+    const token = jwt.sign({ id: user.id, purpose: 'password-reset' }, JWT_SECRET, { expiresIn: '15m' });
+    resetTokens.set(token, { userId: user.id, expiresAt: Date.now() + 15 * 60 * 1000 });
+    response = { ...response, resetToken: token };
   }
-
-  return res.json({
-    message: `Password reset instructions have been sent to ${email}.`,
-  });
+  return res.json(response);
 });
 
 app.post('/api/auth/reset-password', async (req, res) => {
   const { token, password, confirmPassword } = req.body;
-
-  if (!token || !password || !confirmPassword) {
-    return res.status(400).json({ message: 'Missing reset parameters.' });
-  }
-
-  if (password !== confirmPassword) {
-    return res.status(400).json({ message: 'Passwords do not match.' });
-  }
-
-  const hashed = await bcrypt.hash(password, 10);
-  const user = userStore[0];
-  user.passwordHash = hashed;
-
+  const reset = resetTokens.get(token);
+  if (!reset || reset.expiresAt < Date.now()) return res.status(400).json({ message: 'Reset token is invalid or expired.' });
+  if (typeof password !== 'string' || password.length < 8) return res.status(400).json({ message: 'Password must be at least 8 characters.' });
+  if (password !== confirmPassword) return res.status(400).json({ message: 'Passwords do not match.' });
+  const user = userStore.find((entry) => entry.id === reset.userId);
+  if (!user) return res.status(400).json({ message: 'Reset token is invalid or expired.' });
+  user.passwordHash = await bcrypt.hash(password, 12);
+  resetTokens.delete(token);
   return res.json({ message: 'Password reset successfully.' });
 });
 
-app.post('/api/auth/logout', (req, res) => {
-  res.json({ message: 'Logged out successfully.' });
-});
-
 app.get('/api/dashboard', authenticate, (req, res) => {
-  const user = userStore.find((entry) => entry.id === req.user.id) || userStore[0];
-
+  const user = userStore.find((entry) => entry.id === req.user.id);
   res.json({
     welcome: `Welcome back, ${user.fullName.split(' ')[0]}`,
     totalSavings: 1260000,
@@ -180,93 +132,29 @@ app.get('/api/dashboard', authenticate, (req, res) => {
       { id: 'a-3', title: 'New member joined', subtitle: 'Mercy Kamau', amount: '+1' },
     ],
     notifications: notificationStore.slice(0, 3),
-    stats: [
-      { label: 'Savings rate', value: '78%', change: '+8%' },
-      { label: 'Active groups', value: '4', change: '+1' },
-      { label: 'Outstanding', value: 'KSh 200,000', change: '2 due soon' },
-      { label: 'Member health', value: 'Excellent', change: '+15%' },
-    ],
   });
 });
 
-app.get('/api/groups', authenticate, (req, res) => {
-  res.json({
-    groups: groupStore.map((group) => ({
-      id: group.id,
-      name: group.name,
-      members: group.members.length,
-      pool: group.totalSavings,
-      admin: group.adminName,
-      status: group.status,
-    })),
-  });
-});
-
-app.get('/api/loans', authenticate, (req, res) => {
-  res.json({
-    loans: loanStore.map((loan) => ({
-      id: loan.id,
-      member: loan.member,
-      amount: loan.amount,
-      interestRate: loan.interestRate,
-      dueDate: loan.dueDate,
-      balance: loan.balance,
-      status: loan.status,
-    })),
-  });
-});
-
-app.get('/api/payments', authenticate, (req, res) => {
-  res.json({
-    payments: paymentStore.map((payment) => ({
-      id: payment.id,
-      member: payment.member,
-      method: payment.method,
-      amount: payment.amount,
-      reference: payment.reference,
-      status: payment.status,
-    })),
-  });
-});
-
-app.get('/api/reports', authenticate, (req, res) => {
-  res.json({
-    summary: {
-      savings: 1450000,
-      loans: 420000,
-      payments: 890000,
-    },
-    monthly: [
-      { month: 'Jan', savings: 120000, loans: 35000, payments: 82000 },
-      { month: 'Feb', savings: 98000, loans: 41000, payments: 76000 },
-      { month: 'Mar', savings: 150000, loans: 52000, payments: 95000 },
-      { month: 'Apr', savings: 164000, loans: 61000, payments: 120000 },
-    ],
-  });
-});
-
-app.get('/api/profile', authenticate, (req, res) => {
-  const user = userStore.find((entry) => entry.id === req.user.id) || userStore[0];
-  res.json({ user: sanitizeUser(user) });
-});
-
+app.get('/api/groups', authenticate, (_req, res) => res.json({ groups: groupStore.map((group) => ({ id: group.id, name: group.name, members: group.members.length, pool: group.totalSavings, admin: group.adminName, status: group.status })) }));
+app.get('/api/loans', authenticate, (_req, res) => res.json({ loans: loanStore }));
+app.get('/api/payments', authenticate, (_req, res) => res.json({ payments: paymentStore }));
+app.get('/api/reports', authenticate, (_req, res) => res.json({ summary: { savings: 1450000, loans: 420000, payments: 890000 }, monthly: [{ month: 'Jan', savings: 120000, loans: 35000, payments: 82000 }, { month: 'Feb', savings: 98000, loans: 41000, payments: 76000 }, { month: 'Mar', savings: 150000, loans: 52000, payments: 95000 }, { month: 'Apr', savings: 164000, loans: 61000, payments: 120000 }] }));
+app.get('/api/profile', authenticate, (req, res) => res.json({ user: userStore.find((entry) => entry.id === req.user.id) && sanitizeUser(userStore.find((entry) => entry.id === req.user.id)) }));
 app.patch('/api/profile', authenticate, (req, res) => {
-  const user = userStore.find((entry) => entry.id === req.user.id) || userStore[0];
-  Object.assign(user, req.body);
+  const user = userStore.find((entry) => entry.id === req.user.id);
+  const { fullName, phoneNumber, email, location } = req.body;
+  if (typeof fullName === 'string' && fullName.trim().length >= 2) user.fullName = fullName.trim();
+  if (typeof phoneNumber === 'string') user.phoneNumber = phoneNumber.trim();
+  if (typeof email === 'string') user.email = email.trim().toLowerCase();
+  if (typeof location === 'string') user.location = location.trim();
   res.json({ message: 'Profile updated successfully.', user: sanitizeUser(user) });
 });
+app.get('/api/admin', authenticate, requireAdmin, (_req, res) => res.json({ summary: { members: userStore.length, groups: groupStore.length, loans: loanStore.length, payments: paymentStore.length } }));
 
-app.get('/api/admin', authenticate, (req, res) => {
-  const summary = {
-    members: userStore.length,
-    groups: groupStore.length,
-    loans: loanStore.length,
-    payments: paymentStore.length,
-  };
+// Demo accounts use a runtime-generated hash; no plaintext password is stored.
+const demoPasswordHash = await bcrypt.hash('Password123!', 12);
+for (const user of userStore) {
+  if (user.email === 'admin@kopahub.io' || user.email === 'patrick@kopahub.io') user.passwordHash = demoPasswordHash;
+}
 
-  res.json({ summary });
-});
-
-app.listen(PORT, () => {
-  console.log(`KopaHub API listening on http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`KopaHub API listening on http://localhost:${PORT}`));
