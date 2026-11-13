@@ -1,6 +1,3 @@
-// This is the Prisma schema for KopaHub.
-// It models key fintech entities and relationships for a PostgreSQL-backed backend.
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -42,7 +39,7 @@ enum PaymentStatus {
 model User {
   id            String         @id @default(cuid())
   fullName      String
-  phoneNumber   String?
+  phoneNumber   String         @unique
   email         String?        @unique
   passwordHash  String
   role          Role           @default(MEMBER)
@@ -50,7 +47,6 @@ model User {
   location      String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
-
   adminGroups   Group[]        @relation("GroupAdmin")
   memberships   GroupMember[]
   loans         Loan[]         @relation("LoanBorrower")
@@ -60,15 +56,16 @@ model User {
 }
 
 model Group {
-  id          String       @id @default(cuid())
-  name        String
-  description String?
-  adminId     String
-  admin       User         @relation("GroupAdmin", fields: [adminId], references: [id])
-  members     GroupMember[]
-  loans       Loan[]
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id            String        @id @default(cuid())
+  name          String
+  description   String?
+  totalSavings  Decimal       @default(0) @db.Decimal(12, 2)
+  adminId       String
+  admin         User          @relation("GroupAdmin", fields: [adminId], references: [id])
+  members       GroupMember[]
+  loans         Loan[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 }
 
 model GroupMember {
@@ -77,10 +74,8 @@ model GroupMember {
   groupId   String
   role      GroupRole @default(MEMBER)
   joinedAt  DateTime  @default(now())
-
-  user      User      @relation(fields: [userId], references: [id])
-  group     Group     @relation(fields: [groupId], references: [id])
-
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
   @@unique([userId, groupId])
 }
 
@@ -92,57 +87,53 @@ model Loan {
   interestRate  Decimal     @db.Decimal(5, 2)
   status        LoanStatus  @default(PENDING)
   dueDate       DateTime?
-  outstanding  Decimal     @db.Decimal(12, 2)
+  outstanding   Decimal     @db.Decimal(12, 2)
   approvedAt    DateTime?
   rejectedAt    DateTime?
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-
   borrower      User        @relation("LoanBorrower", fields: [borrowerId], references: [id])
   group         Group?      @relation(fields: [groupId], references: [id])
   payments      Payment[]
 }
 
 model Payment {
-  id             String        @id @default(cuid())
-  userId         String
-  loanId         String?
-  method         PaymentMethod
-  amount         Decimal       @db.Decimal(12, 2)
-  status         PaymentStatus @default(PENDING)
-  reference      String?
-  receiptUrl     String?
-  transactionId  String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  user           User          @relation("PaymentUser", fields: [userId], references: [id])
-  loan           Loan?         @relation(fields: [loanId], references: [id])
-  transactions   Transaction[]
+  id            String        @id @default(cuid())
+  userId        String
+  loanId        String?
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(12, 2)
+  status        PaymentStatus @default(PENDING)
+  reference     String?       @unique
+  receiptUrl    String?
+  transactionId String?       @unique
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  user          User          @relation("PaymentUser", fields: [userId], references: [id])
+  loan          Loan?         @relation(fields: [loanId], references: [id])
+  transactions  Transaction[]
 }
 
 model Transaction {
-  id            String   @id @default(cuid())
-  userId        String
-  paymentId     String?
-  type          String
-  amount        Decimal  @db.Decimal(12, 2)
-  description   String?
-  reference     String?
-  createdAt     DateTime @default(now())
-
-  user          User     @relation(fields: [userId], references: [id])
-  payment       Payment? @relation(fields: [paymentId], references: [id])
+  id          String   @id @default(cuid())
+  userId      String
+  paymentId   String?
+  type        String
+  amount      Decimal  @db.Decimal(12, 2)
+  description String?
+  reference   String?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+  payment     Payment? @relation(fields: [paymentId], references: [id])
 }
 
 model Notification {
-  id         String    @id @default(cuid())
-  userId     String
-  title      String
-  message    String
-  type       String?
-  isRead     Boolean   @default(false)
-  createdAt  DateTime  @default(now())
-
-  user       User      @relation(fields: [userId], references: [id])
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
