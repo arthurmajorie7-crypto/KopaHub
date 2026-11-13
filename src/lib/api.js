@@ -1,18 +1,14 @@
-import axios from 'axios';
+import { useEffect, useState } from 'react';
+import { api } from '../lib/api';
 
-export const api = axios.create({
-  baseURL: '/api',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
+export default function LoginPage() {
+  const [token, setToken] = useState(localStorage.getItem('kopahub_token') || sessionStorage.getItem('kopahub_token') || '');
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('kopahub_token');
+  useEffect(() => {
+    if (token) {
+      api.defaults.headers.common.Authorization = `Bearer ${token}`;
+    }
+  }, [token]);
 
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-
-  return config;
-});
+  return <div className="text-slate-500">API ready</div>;
+}

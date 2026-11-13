@@ -1,9 +1,12 @@
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 export default function LoginPage() {
-  const { login, user } = useAuth();
   const navigate = useNavigate();
+  const { login, user } = useAuth();
   const [form, setForm] = useState({ email: 'admin@kopahub.io', password: 'Password123!' });
+  const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -19,7 +22,7 @@ export default function LoginPage() {
     setError('');
 
     try {
-      await login(form);
+      await login(form, rememberMe);
       navigate('/dashboard');
     } catch (err) {
       setError(err.response?.data?.message || 'Unable to log in. Please try again.');
@@ -82,7 +85,12 @@ export default function LoginPage() {
 
               <div className="flex items-center justify-between text-sm">
                 <label className="flex items-center gap-2 text-slate-600">
-                  <input type="checkbox" className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(event) => setRememberMe(event.target.checked)}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
                   Remember me
                 </label>
                 <Link to="/forgot-password" className="font-medium text-blue-600 hover:text-blue-700">
